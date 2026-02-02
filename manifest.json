@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Dropship Product Importer",
+  "version": "0.1",
+  "description": "Import products from suppliers into Shopify",
+  "host_permissions": [
+    "https://dropbridge.onrender.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.aliexpress.com/*",
+        "https://www.etsy.com/*",
+        "https://www.walmart.com/*"
+      ],
+      "js": ["content.js"]
+    }
+  ]
+}
