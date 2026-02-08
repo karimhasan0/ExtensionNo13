@@ -1,22 +1,32 @@
 function parseAliExpress() {
-  // ✅ TITLE (AliExpress-specific)
+
   const title =
     document.querySelector('[data-pl="product-title"]')?.innerText?.trim() ||
     document.querySelector('h1[class*="title"]')?.innerText?.trim() ||
     document.querySelector('h1')?.innerText?.trim() ||
     "";
 
-  // ✅ PRICE (handles ranges & discounts)
+
   let priceText =
     document.querySelector('[data-pl="product-price"]')?.innerText ||
     document.querySelector('[class*="price"]')?.innerText ||
     "";
 
-  priceText = priceText.replace(/,/g, "");
-  const match = priceText.match(/(\d+(\.\d+)?)/);
-  const price = match ? match[1] : "";
 
-  // ✅ DESCRIPTION (best safe source)
+  priceText = priceText.replace(/,/g, "");
+
+
+  const numbers =
+    priceText
+      .match(/\d+(\.\d+)?/g)
+      ?.map(Number)
+      .filter((n) => n > 0 && n < 100000) || [];
+
+  const price = numbers.length
+    ? Math.min(...numbers).toFixed(2)
+    : "";
+
+
   const description =
     document.querySelector('[data-pl="product-description"]')?.innerText ||
     document.querySelector('meta[name="description"]')?.content ||
@@ -36,13 +46,16 @@ if (!window.__dropshipImporterInjected) {
     position: "fixed",
     bottom: "20px",
     right: "20px",
-    zIndex: "9999",
+    zIndex: "999999",
     padding: "12px 16px",
     background: "#008060",
     color: "#fff",
     border: "none",
     borderRadius: "6px",
+    fontSize: "14px",
+    fontWeight: "600",
     cursor: "pointer",
+    boxShadow: "0 4px 12px rgba(0,0,0,0.2)",
   });
 
   document.body.appendChild(button);
@@ -51,7 +64,7 @@ if (!window.__dropshipImporterInjected) {
     const parsed = parseAliExpress();
 
     if (!parsed.title || !parsed.price) {
-      alert("Failed to extract product data");
+      alert("❌ Failed to extract product data");
       return;
     }
 
@@ -67,9 +80,9 @@ if (!window.__dropshipImporterInjected) {
       },
       (response) => {
         if (response?.success) {
-          alert("Product sent 🚀 Please check the app again in shopify");
+          alert("✅ Product sent! Open your Shopify app.");
         } else {
-          alert("Failed to send product");
+          alert("❌ Failed to send product");
         }
       }
     );
