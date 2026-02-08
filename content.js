@@ -246,7 +246,7 @@ function attachLiveTracking() {
 let button;
 function updateButton() {
   if (!button) return;
-  button.innerText = current.price ? `Send product for review in Shopify ($${current.price})` : 'Send product for review in Shopify';
+  button.innerText = 'Send product for review in Shopify';
 }
 
 function injectButton() {
@@ -297,3 +297,4 @@ if (document.readyState === 'loading') {
 } else {
   init();
 }
+
