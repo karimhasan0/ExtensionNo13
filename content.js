@@ -1,95 +1,190 @@
 
 
-function formatPrice(n) {
-  if (n == null || n === "") return "";
-  const num = Number(n);
-  if (isNaN(num)) return "";
-  return num.toFixed(2);
+function formatPrice(v) {
+  const n = Number(v);
+  return !isNaN(n) ? n.toFixed(2) : "";
 }
 
-function getPriceFromAliExpressState() {
+function getPriceFromJSONLD() {
   try {
-    const state =
-      window.__AER_DATA__ ||
-      window.runParams ||
-      window.__runParams__ ||
-      window.runData ||
-      window.run_model;
+    const scripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]'));
+    for (const s of scripts) {
+      let json;
+      try {
+        json = JSON.parse(s.textContent || '');
+      } catch {
+        continue;
+      }
+      const items = Array.isArray(json) ? json : [json];
+      for (const item of items) {
+        const offers = item.offers || (item.hasOwnProperty('offers') ? item.offers : null);
+        if (!offers) continue;
+        const offerArr = Array.isArray(offers) ? offers : [offers];
+        for (const offer of offerArr) {
+          if (offer.price) {
+            const n = Number(String(offer.price).replace(/[^0-9.]/g, ''));
+            if (!isNaN(n) && n >= 0.5) return n.toFixed(2);
+          }
+          if (offer.priceSpecification && offer.priceSpecification.price) {
+            const n = Number(String(offer.priceSpecification.price).replace(/[^0-9.]/g, ''));
+            if (!isNaN(n) && n >= 0.5) return n.toFixed(2);
+          }
+        }
+      }
+    }
+  } catch (e) {}
+  return null;
+}
 
-    if (!state) return null;
+function getPriceFromMeta() {
+  try {
+    const selectors = [
+      'meta[itemprop="price"]',
+      'meta[property="product:price:amount"]',
+      'meta[name="twitter:data1"]',
+      'meta[name="price"]',
+      'meta[name="sauce:price"]'
+    ];
+    for (const sel of selectors) {
+      const meta = document.querySelector(sel);
+      if (meta) {
+        const content = meta.getAttribute('content') || meta.getAttribute('value') || meta.getAttribute('data') || '';
+        const n = Number(String(content).replace(/[^0-9.]/g, ''));
+        if (!isNaN(n) && n >= 0.5) return n.toFixed(2);
+      }
+    }
+  } catch {}
+  return null;
+}
 
-    const candidates = [];
+function isElementVisible(el) {
+  if (!el) return false;
+  try {
+    const cs = window.getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity || '1') < 0.03) return false;
+    if (el.closest && el.closest('[aria-hidden="true"]')) return false;
+    const rects = el.getClientRects();
+    if (!rects || rects.length === 0) return false;
+    for (const r of rects) {
+      if (r.width > 0 && r.height > 0) return true;
+    }
+    return false;
+  } catch { return false; }
+}
 
-    if (state.skuModule?.skuPriceList) {
-      state.skuModule.skuPriceList.forEach((s) => {
-        const p = s?.skuVal?.skuPrice || s?.skuPrice || s?.price;
-        const n = Number(String(p).replace(/[^0-9.]/g, ""));
-        if (!isNaN(n) && n >= 0.5) candidates.push(n);
-      });
+function isCrossedOut(el) {
+  if (!el) return false;
+  if (el.closest && el.closest('del, s')) return true;
+  try {
+    const cs = window.getComputedStyle(el);
+    if ((cs.textDecorationLine || '').includes('line-through')) return true;
+  } catch {}
+  const parent = el.closest && el.closest('[class], [id]');
+  if (parent) {
+    const combined = ((parent.className || '') + ' ' + (parent.id || '')).toLowerCase();
+    const bad = ['preheat','upcoming','countdown','old','strike','original','del','cross'];
+    for (const k of bad) if (combined.includes(k)) return true;
+  }
+  return false;
+}
+
+function getPriceFromDOMVisual() {
+  try {
+    const containerSelectors = [
+      '[data-pl="product-price"]',
+      '[class*="product-price"]',
+      '[class*="price"]',
+      '[class*="productPrice"]',
+      '[id*="price"]'
+    ];
+    const nodes = [];
+    for (const sel of containerSelectors) {
+      const containers = Array.from(document.querySelectorAll(sel));
+      for (const c of containers) {
+        const leafCandidates = Array.from(c.querySelectorAll('span, strong, b, i, em, div, p, small'));
+        leafCandidates.unshift(c);
+        for (const leaf of leafCandidates) {
+          const txt = (leaf.innerText || '').replace(/,/g, '');
+          if (!txt) continue;
+          const matches = txt.match(/\d+\.\d{2}/g) || [];
+          for (const m of matches) {
+            const value = Number(m);
+            if (isNaN(value) || value < 0.5 || value > 100000) continue;
+            nodes.push({ el: leaf, value });
+          }
+        }
+      }
     }
 
+    if (!nodes.length) {
+      const all = Array.from(document.body.querySelectorAll('*')).slice(0, 600);
+      for (const el of all) {
+        const t = (el.innerText || '').replace(/,/g, '');
+        const matches = t.match(/\d+\.\d{2}/g) || [];
+        for (const m of matches) {
+          const v = Number(m);
+          if (!isNaN(v) && v >= 0.5 && v < 100000) nodes.push({ el, value: v });
+        }
+      }
+    }
+
+    if (!nodes.length) return null;
+
+    const scored = nodes.map(({el, value}) => {
+      const visible = isElementVisible(el);
+      const crossed = isCrossedOut(el);
+      const cs = window.getComputedStyle(el);
+      const fontSize = parseFloat(cs.fontSize || '0') || 0;
+      const rawW = cs.fontWeight || '400';
+      const fontWeight = isNaN(Number(rawW)) ? (rawW === 'bold' ? 700 : 400) : Number(rawW);
+      let area = 0;
+      try { for (const r of el.getClientRects()) area += r.width * r.height; } catch {}
+      return { el, value, visible, crossed, fontSize, fontWeight, area };
+    }).filter(s => !s.crossed && s.value >= 0.5 && s.value < 100000);
+
+    const visibleOnly = scored.filter(s => s.visible);
+    const pool = visibleOnly.length ? visibleOnly : scored;
+    if (!pool.length) return null;
+
+    pool.sort((a,b) => {
+      if (b.area !== a.area) return b.area - a.area;
+      if (b.fontSize !== a.fontSize) return b.fontSize - a.fontSize;
+      if (b.fontWeight !== a.fontWeight) return b.fontWeight - a.fontWeight;
+      return a.value - b.value;
+    });
+
+    return pool[0].value.toFixed(2);
+  } catch (e) {
+    return null;
+  }
+}
+
+function getPriceFromState() {
+  try {
+    const state = window.__AER_DATA__ || window.runParams || window.__runParams__ || window.runData;
+    if (!state) return null;
+    const candidates = [];
     if (state.priceModule) {
       const pm = state.priceModule;
-      const tryVals = [
-        pm.activityPrice?.value,
-        pm.discountPrice?.value,
-        pm.minPrice,
-        pm.maxPrice,
-        pm.price,
-      ];
-      tryVals.forEach((v) => {
-        if (v == null) return;
-        const n = Number(String(v).replace(/[^0-9.]/g, ""));
+      const tryFields = [pm.discountPrice?.value, pm.activityPrice?.value, pm.minPrice, pm.maxPrice, pm.price];
+      for (const f of tryFields) {
+        if (!f && f !== 0) continue;
+        const n = Number(String(f).replace(/[^0-9.]/g, ''));
+        if (!isNaN(n) && n >= 0.5) candidates.push(n);
+      }
+    }
+    if (state.skuModule?.skuPriceList) {
+      state.skuModule.skuPriceList.forEach(s => {
+        const raw = s?.skuVal?.skuPrice || s?.skuPrice || s?.price;
+        const n = Number(String(raw).replace(/[^0-9.]/g, ''));
         if (!isNaN(n) && n >= 0.5) candidates.push(n);
       });
     }
-
-    if (Array.isArray(state.skuPriceList)) {
-      state.skuPriceList.forEach((p) => {
-        const n = Number(String(p).replace(/[^0-9.]/g, ""));
-        if (!isNaN(n) && n >= 0.5) candidates.push(n);
-      });
-    }
-
-    if (candidates.length) {
-      return Math.min(...candidates).toFixed(2);
-    }
-  } catch (e) {
-  }
-  return null;
+    return candidates.length ? Math.min(...candidates).toFixed(2) : null;
+  } catch { return null; }
 }
 
-function getPriceFromDOM() {
-  try {
-    let priceText =
-      document.querySelector('[data-pl="product-price"]')?.innerText ||
-      document.querySelector('[class*="price"]')?.innerText ||
-      "";
-
-    priceText = priceText.replace(/,/g, "");
-
-    const decimalMatches = priceText.match(/\d+\.\d{2}/g) || [];
-    const decimals = decimalMatches.map(Number).filter(n => n >= 0.5 && n < 100000);
-
-    if (decimals.length) {
-      return Math.min(...decimals).toFixed(2);
-    }
-
-    const numbers =
-      priceText
-        .match(/\d+(\.\d+)?/g)
-        ?.map(Number)
-        .filter((n) => !isNaN(n) && n >= 0.5 && n < 100000) || [];
-
-    if (numbers.length) {
-      return Math.min(...numbers).toFixed(2);
-    }
-  } catch (e) {
-  }
-  return null;
-}
-
-function parseAliExpressOnce() {
+function parseAliExpress() {
   const title =
     document.querySelector('[data-pl="product-title"]')?.innerText?.trim() ||
     document.querySelector('h1[class*="title"]')?.innerText?.trim() ||
@@ -101,222 +196,104 @@ function parseAliExpressOnce() {
     document.querySelector('meta[name="description"]')?.content ||
     "";
 
-  const price = getPriceFromAliExpressState() || getPriceFromDOM() || "";
+  const jsonLdPrice = getPriceFromJSONLD();
+  if (jsonLdPrice) return { title, description, price: formatPrice(jsonLdPrice) };
 
-  return { title, price: formatPrice(price), description };
+  const metaPrice = getPriceFromMeta();
+  if (metaPrice) return { title, description, price: formatPrice(metaPrice) };
+
+  const domPrice = getPriceFromDOMVisual();
+  if (domPrice) return { title, description, price: formatPrice(domPrice) };
+
+  const statePrice = getPriceFromState();
+  if (statePrice) return { title, description, price: formatPrice(statePrice) };
+
+  return { title, description, price: "" };
 }
 
+const current = { title: "", price: "", description: "" };
 
-function debounce(fn, wait = 200) {
-  let t = null;
-  return function (...args) {
-    clearTimeout(t);
-    t = setTimeout(() => fn.apply(this, args), wait);
-  };
+function debounce(fn, wait = 150) {
+  let t;
+  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), wait); };
 }
 
-const current = {
-  title: "",
-  price: "",
-  description: "",
-};
-
-let actionButton = null;
-let priceBadge = null;
-
-function updateCurrentAndUI(parsed) {
-  const prevPrice = current.price;
-  current.title = parsed.title || current.title;
-  current.description = parsed.description || current.description;
-  current.price = parsed.price || current.price;
-
-  if (actionButton) {
-    const badgeText = current.price ? ` ($${formatPrice(current.price)})` : "";
-    actionButton.innerText = `Send product for review in Shopify`;
-  }
-
-  if (priceBadge && prevPrice !== current.price) {
-    priceBadge.innerText = current.price ? `$${formatPrice(current.price)}` : "";
-    priceBadge.style.opacity = "1";
-    setTimeout(() => {
-      priceBadge.style.opacity = "0.6";
-    }, 600);
-  }
-}
-
-const reparseAndUpdate = debounce(() => {
-  const parsed = parseAliExpressOnce();
-  updateCurrentAndUI(parsed);
-}, 200);
-
-let lastStatePrice = null;
-const pollAliExpressState = () => {
+const refresh = debounce(() => {
   try {
-    const sPrice = getPriceFromAliExpressState();
-    if (sPrice && sPrice !== lastStatePrice) {
-      lastStatePrice = sPrice;
-      reparseAndUpdate();
-    }
-  } catch (e) {
-  }
-};
+    const p = parseAliExpress();
+    if (p.title) current.title = p.title;
+    if (p.description) current.description = p.description;
+    if (p.price) current.price = p.price;
+    updateButton();
+  } catch {}
+}, 140);
 
-function attachSkuInteractionListeners() {
-  const skuSelectors = [
-    "[data-sku-id]",
-    ".sku-property",
-    ".sku-property__value",
-    ".sku-attr",
-    ".sku-values",
-    ".sku-property-box",
-    ".sku-variant",
-    ".sku-item",
-    "[data-property]",
-    "select"
-  ];
-
-  document.addEventListener("click", (ev) => {
-    const el = ev.target;
-    for (const sel of skuSelectors) {
-      if (el.closest(sel)) {
-        setTimeout(reparseAndUpdate, 80);
-        return;
+function attachLiveTracking() {
+  document.addEventListener('click', e => {
+    try {
+      if (e.target.closest && e.target.closest('[data-sku], .sku, select, .sku-property, .sku-item')) {
+        setTimeout(refresh, 100);
       }
-    }
+    } catch {}
   }, true);
 
-  document.addEventListener("change", (ev) => {
-    const el = ev.target;
-    if (el && (el.tagName === "SELECT" || el.matches && el.matches("select"))) {
-      setTimeout(reparseAndUpdate, 80);
-    }
-  }, true);
+  const obs = new MutationObserver(refresh);
+  obs.observe(document.body, { childList: true, subtree: true, characterData: true });
+
+  setInterval(refresh, 2500);
 }
 
-function attachMutationObservers() {
-  const observer = new MutationObserver(debounce((mutations) => {
-    reparseAndUpdate();
-  }, 150));
-
-  if (document.body) {
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-      characterData: true,
-    });
-  }
-
-  const priceNode =
-    document.querySelector('[data-pl="product-price"]') ||
-    document.querySelector('[class*="price"]');
-
-  if (priceNode) {
-    const priceObs = new MutationObserver(debounce(() => {
-      reparseAndUpdate();
-    }, 80));
-    priceObs.observe(priceNode, { childList: true, subtree: true, characterData: true });
-  }
+let button;
+function updateButton() {
+  if (!button) return;
+  button.innerText = current.price ? `Send product for review in Shopify ($${current.price})` : 'Send product for review in Shopify';
 }
 
-
-function injectUI() {
+function injectButton() {
   if (window.__dropshipImporterInjected) return;
   window.__dropshipImporterInjected = true;
 
-  actionButton = document.createElement("button");
-  actionButton.type = "button";
-  actionButton.setAttribute("aria-label", "Send product for review in Shopify");
-
-  Object.assign(actionButton.style, {
-    position: "fixed",
-    bottom: "20px",
-    right: "20px",
-    zIndex: "999999",
-    padding: "12px 16px",
-    background: "#008060",
-    color: "#fff",
-    border: "none",
-    borderRadius: "6px",
-    fontSize: "14px",
-    fontWeight: "600",
-    cursor: "pointer",
-    boxShadow: "0 6px 18px rgba(0,0,0,0.18)",
-    display: "flex",
-    alignItems: "center",
-    gap: "10px",
+  button = document.createElement('button');
+  Object.assign(button.style, {
+    position: 'fixed', bottom: '20px', right: '20px', zIndex: '999999',
+    padding: '12px 16px', background: '#008060', color: '#fff', border: 'none',
+    borderRadius: '6px', fontSize: '14px', fontWeight: '600', cursor: 'pointer',
+    boxShadow: '0 6px 18px rgba(0,0,0,0.2)'
   });
 
-  priceBadge = document.createElement("div");
-  Object.assign(priceBadge.style, {
-    background: "rgba(0,0,0,0.08)",
-    color: "#fff",
-    padding: "4px 8px",
-    borderRadius: "4px",
-    fontSize: "13px",
-    fontWeight: "700",
-    opacity: "0.6",
-    transition: "opacity 260ms",
-    backgroundColor: "rgba(0,0,0,0.2)"
-  });
+  document.body.appendChild(button);
 
-  actionButton.appendChild(priceBadge);
+  button.addEventListener('click', () => {
+    refresh();
 
-  actionButton.innerText = "Send product for review in Shopify";
-  actionButton.prepend(priceBadge);
+    button.disabled = true;
+    const prevText = button.innerText;
+    button.innerText = 'Loading latest product data...';
 
-  document.body.appendChild(actionButton);
+    setTimeout(() => {
+      button.disabled = false;
+      button.innerText = prevText;
 
-  actionButton.addEventListener("click", () => {
-    reparseAndUpdate();
-
-    const payload = {
-      supplier: "aliexpress",
-      title: current.title || parseAliExpressOnce().title,
-      price: current.price || parseAliExpressOnce().price,
-      description: current.description || parseAliExpressOnce().description,
-    };
-
-    if (!payload.title || !payload.price) {
-      alert("❌ Failed to extract product data. Make sure a product is selected.");
-      return;
-    }
-
-    chrome.runtime.sendMessage(
-      {
-        type: "IMPORT_PRODUCT",
-        payload,
-      },
-      (response) => {
-        if (response?.success) {
-          alert("✅ Product sent! Open your Shopify app.");
-        } else {
-          alert("❌ Failed to send product");
-        }
+      if (!current.title || !current.price) {
+        alert('⏳ Product data still loading, please click again');
+        return;
       }
-    );
+
+      chrome.runtime.sendMessage({ type: 'IMPORT_PRODUCT', payload: { supplier: 'aliexpress', title: current.title, price: current.price, description: current.description } }, res => {
+        alert(res?.success ? '✅ Product sent! Open your Shopify app.' : '❌ Failed to send product');
+      });
+    }, 250);
   });
 }
 
-
-function startLiveTracking() {
-  const parsed = parseAliExpressOnce();
-  current.title = parsed.title;
-  current.price = parsed.price;
-  current.description = parsed.description;
-
-  injectUI();
-  updateCurrentAndUI(parsed);
-
-  attachSkuInteractionListeners();
-  attachMutationObservers();
-
-  setInterval(pollAliExpressState, 700);
-
-  setInterval(reparseAndUpdate, 3000);
+function init() {
+  refresh();
+  injectButton();
+  attachLiveTracking();
 }
 
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", startLiveTracking);
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
 } else {
-  startLiveTracking();
+  init();
 }
